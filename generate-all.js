@@ -2,6 +2,42 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
+// 增量更新状态文件路径
+const LAST_UPDATE_FILE = path.join(__dirname, 'last-update.json');
+
+// 读取上次更新状态
+function readLastUpdate() {
+    if (fs.existsSync(LAST_UPDATE_FILE)) {
+        try {
+            return JSON.parse(fs.readFileSync(LAST_UPDATE_FILE, 'utf8'));
+        } catch (err) {
+            console.warn('无法读取上次更新记录，将执行完整更新:', err.message);
+            return {};
+        }
+    }
+    return {};
+}
+
+// 保存当前更新状态
+function saveLastUpdate(state) {
+    fs.writeFileSync(LAST_UPDATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+}
+
+// 获取文件的最后修改时间戳
+function getFileMtime(filePath) {
+    try {
+        return fs.statSync(filePath).mtimeMs;
+    } catch (err) {
+        return 0;
+    }
+}
+
+// 判断文件是否为新文件或已更新
+function isFileUpdated(filePath, lastTime) {
+    const currentMtime = getFileMtime(filePath);
+    return currentMtime > 0 && currentMtime > lastTime;
+}
+
 // 分类映射
 const categoryMapping = {
     'aquatic': { id: 'aquatic', name: '水产', icon: '🐟' },
@@ -51,6 +87,11 @@ function findDishImage(dishDir, dishName) {
             return ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].includes(ext);
         });
         
+        // 如果没有图片文件，返回null
+        if (imageFiles.length === 0) {
+            return null;
+        }
+        
         // 如果只有一个图片文件，直接返回该文件
         if (imageFiles.length === 1) {
             return imageFiles[0];
@@ -74,7 +115,14 @@ function findDishImage(dishDir, dishName) {
                     normalizedDishName.includes(withoutChengpin)) && 
                    ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].includes(ext);
         });
-        return imageFile || null;
+        
+        // 如果找到了匹配的图片，返回该图片
+        if (imageFile) {
+            return imageFile;
+        }
+        
+        // 如果没有找到匹配的图片，返回所有图片文件的数组
+        return imageFiles;
     } catch (err) {
         console.error(`查找图片失败 ${dishDir}:`, err.message);
         return null;
@@ -134,13 +182,10 @@ function parseDishDifficulty(filePath) {
 }
 
 // 递归创建目录
-function mkdirSyncRecursive(directory) {
-    const parentDir = path.dirname(directory);
-    if (!fs.existsSync(parentDir)) {
-        mkdirSyncRecursive(parentDir);
-    }
-    if (!fs.existsSync(directory)) {
-        fs.mkdirSync(directory);
+function mkdirSyncRecursive(dir) {
+    if (!fs.existsSync(dir)) {
+        mkdirSyncRecursive(path.dirname(dir));
+        fs.mkdirSync(dir);
     }
 }
 
@@ -183,44 +228,69 @@ function findAllImages(dir, fileList = []) {
     return fileList;
 }
 
-// 扫描菜品目录
-function scanDishes(dishesDir) {
+// 扫描菜品目录（支持增量）
+function scanDishes(dishesDir, lastUpdate = {}) {
     const dishes = {};
-    
+    const currentUpdate = {};
+
     // 初始化分类
     Object.keys(categoryMapping).forEach(categoryId => {
         dishes[categoryId] = [];
+        currentUpdate[categoryId] = {};
     });
-    
-    // 遍历分类目录
+
     const categories = fs.readdirSync(dishesDir);
-    
+
     for (const category of categories) {
         const categoryPath = path.join(dishesDir, category);
         if (!fs.statSync(categoryPath).isDirectory()) continue;
-        
-        // 跳过模板目录
         if (category === 'template') continue;
-        
+
         const categoryId = getCategoryName(category);
         if (!dishes[categoryId]) {
             dishes[categoryId] = [];
         }
-        
-        // 遍历分类下的菜品文件
+
         const items = fs.readdirSync(categoryPath);
         let dishIndex = 1;
+
         for (const item of items) {
             const itemPath = path.join(categoryPath, item);
             const stat = fs.statSync(itemPath);
-            
+
             if (stat.isFile() && item.endsWith('.md')) {
                 // 直接在分类目录下的MD文件
                 const dishName = getDishName(item);
-                const description = parseDishDescription(itemPath);
-                const difficulty = parseDishDifficulty(itemPath);
+                const contentPath = itemPath;
+                
+                // 检查文件是否更新
+                const mtime = getFileMtime(contentPath);
+                const lastTime = (lastUpdate[categoryId] && lastUpdate[categoryId][dishName]) || 0;
+                if (!isFileUpdated(contentPath, lastTime)) {
+                    // 使用缓存数据
+                    const cached = global.cachedDishes?.[categoryId]?.find(d => d.name === dishName);
+                    if (cached) {
+                        dishes[categoryId].push(cached);
+                        currentUpdate[categoryId][dishName] = mtime;
+                        continue;
+                    }
+                }
+
+                // 处理更新或新增的菜品
+                const description = parseDishDescription(contentPath);
+                const difficulty = parseDishDifficulty(contentPath);
                 const imageName = findDishImage(categoryPath, dishName);
                 const dishLink = generateDishLink(categoryId, dishName, false); // 添加链接字段
+                
+                // 处理图片名称，支持多图片
+                let imageNames = null;
+                if (Array.isArray(imageName)) {
+                    // 多图片情况
+                    imageNames = imageName;
+                } else if (imageName) {
+                    // 单图片情况
+                    imageNames = [imageName];
+                }
                 
                 dishes[categoryId].push({
                     id: `${categoryId}_${dishIndex++}`,
@@ -228,9 +298,11 @@ function scanDishes(dishesDir) {
                     description: description,
                     difficulty: difficulty,
                     category: categoryId,
-                    imageName: imageName,
+                    imageName: imageNames, // 使用图片数组
                     link: dishLink // 添加链接字段
                 });
+                
+                currentUpdate[categoryId][dishName] = mtime;
             } else if (stat.isDirectory()) {
                 // 子目录中的菜品
                 const subItems = fs.readdirSync(itemPath);
@@ -239,10 +311,36 @@ function scanDishes(dishesDir) {
                 if (mdFiles.length > 0) {
                     // 使用子目录名称作为菜品名称
                     const dishName = item;
-                    const description = parseDishDescription(path.join(itemPath, mdFiles[0]));
-                    const difficulty = parseDishDifficulty(path.join(itemPath, mdFiles[0]));
+                    const contentPath = path.join(itemPath, mdFiles[0]);
+                    
+                    // 检查文件是否更新
+                    const mtime = getFileMtime(contentPath);
+                    const lastTime = (lastUpdate[categoryId] && lastUpdate[categoryId][dishName]) || 0;
+                    if (!isFileUpdated(contentPath, lastTime)) {
+                        // 使用缓存数据
+                        const cached = global.cachedDishes?.[categoryId]?.find(d => d.name === dishName);
+                        if (cached) {
+                            dishes[categoryId].push(cached);
+                            currentUpdate[categoryId][dishName] = mtime;
+                            continue;
+                        }
+                    }
+                    
+                    // 处理更新或新增的菜品
+                    const description = parseDishDescription(contentPath);
+                    const difficulty = parseDishDifficulty(contentPath);
                     const imageName = findDishImage(itemPath, dishName);
                     const dishLink = generateDishLink(categoryId, dishName, true); // 添加链接字段
+                    
+                    // 处理图片名称，支持多图片
+                    let imageNames = null;
+                    if (Array.isArray(imageName)) {
+                        // 多图片情况
+                        imageNames = imageName;
+                    } else if (imageName) {
+                        // 单图片情况
+                        imageNames = [imageName];
+                    }
                     
                     dishes[categoryId].push({
                         id: `${categoryId}_${dishIndex++}`,
@@ -250,15 +348,20 @@ function scanDishes(dishesDir) {
                         description: description,
                         difficulty: difficulty,
                         category: categoryId,
-                        imageName: imageName,
+                        imageName: imageNames, // 使用图片数组
                         link: dishLink // 添加链接字段
                     });
+                    
+                    currentUpdate[categoryId][dishName] = mtime;
                 }
             }
         }
     }
-    
-    return dishes;
+
+    // 缓存当前结果用于后续图片处理
+    global.cachedDishes = dishes;
+
+    return { dishes, currentUpdate };
 }
 
 // 生成数据文件
@@ -276,21 +379,28 @@ const categories = ${JSON.stringify(allCategories, null, 2)};
 const dishes = ${JSON.stringify(dishes, null, 2)};
 
 // 获取菜品图片路径
-function getDishImagePath(categoryId, dishName, imageName) {
-    if (!imageName) return null;
+function getDishImagePaths(categoryId, dishName, imageNames) {
+    if (!imageNames || imageNames.length === 0) return [];
     
     // 根据菜品ID查找对应的图片文件名
     const categoryDishes = dishes[categoryId];
     if (categoryDishes) {
-        const dish = categoryDishes.find(d => d.name === dishName && d.imageName === imageName);
+        const dish = categoryDishes.find(d => d.name === dishName);
         if (dish && dish.id) {
-            // 使用菜品ID作为图片文件名
-            const ext = imageName.substring(imageName.lastIndexOf('.'));
-            return \`img/\${dish.id}\${ext}\`;
+            // 返回所有图片的路径
+            return imageNames.map((imageName, index) => {
+                const ext = imageName.substring(imageName.lastIndexOf('.'));
+                // 如果是多图片，添加索引以区分不同图片
+                if (imageNames.length > 1) {
+                    return \`img/\${dish.id}_\${index}\${ext}\`;
+                } else {
+                    return \`img/\${dish.id}\${ext}\`;
+                }
+            });
         }
     }
     
-    return null;
+    return [];
 }
 
 // 获取指定分类下的所有菜品
@@ -320,62 +430,86 @@ function getDishesByCategory(categoryId) {
     console.log(`共收录 ${totalDishes} 道菜品`);
 }
 
-// 复制图片文件到目标目录，使用英文命名
+// 复制图片文件到目标目录，使用英文命名（增量）
 function copyImages(dishes, sourceDir, targetDir) {
-    // 清空目标目录
-    if (fs.existsSync(targetDir)) {
-        const files = fs.readdirSync(targetDir);
-        files.forEach(file => {
-            fs.unlinkSync(path.join(targetDir, file));
-        });
-    } else {
-        mkdirSyncRecursive(targetDir);
-    }
-    
+    mkdirSyncRecursive(targetDir);
+
     console.log('正在查找图片文件...');
     const imageFiles = findAllImages(sourceDir);
     console.log(`找到 ${imageFiles.length} 个图片文件`);
-    
+
     // 构建菜品ID映射
     const dishIdMap = {};
     Object.keys(dishes).forEach(categoryId => {
         dishes[categoryId].forEach(dish => {
-            if (dish.imageName) {
-                // 构造映射键 (注意保持原始文件名大小写)
+            // 支持多图片
+            if (dish.imageName && Array.isArray(dish.imageName)) {
+                // 多图片情况
+                dish.imageName.forEach((imageName, index) => {
+                    const mapKey = `${categoryId}/${dish.name}/${imageName}`;
+                    dishIdMap[mapKey] = { 
+                        id: dish.id, 
+                        ext: path.extname(imageName),
+                        index: index,
+                        isMultiple: dish.imageName.length > 1
+                    };
+                });
+            } else if (dish.imageName) {
+                // 单图片情况
                 const mapKey = `${categoryId}/${dish.name}/${dish.imageName}`;
-                dishIdMap[mapKey] = dish.id;
+                dishIdMap[mapKey] = { 
+                    id: dish.id, 
+                    ext: path.extname(dish.imageName),
+                    index: 0,
+                    isMultiple: false
+                };
             }
         });
     });
-    
+
     console.log(`构建了 ${Object.keys(dishIdMap).length} 个菜品映射`);
-    
+
     let copiedCount = 0;
     imageFiles.forEach(imageInfo => {
-        const { sourcePath, category, dishName, fileName, ext } = imageInfo;
-        
-        // 构造映射键 (注意保持原始文件名大小写)
+        const { sourcePath, category, dishName, fileName } = imageInfo;
         const mapKey = `${category}/${dishName}/${fileName}`;
-        const dishId = dishIdMap[mapKey];
-        
-        if (dishId) {
-            // 使用菜品ID作为新文件名，保持原始扩展名
-            const targetFileName = `${dishId}${ext}`;
-            const targetPath = path.join(targetDir, targetFileName);
+        const target = dishIdMap[mapKey];
+
+        if (target) {
+            // 根据是否是多图片决定目标文件名
+            let targetFileName;
+            if (target.isMultiple) {
+                targetFileName = `${target.id}_${target.index}${target.ext}`;
+            } else {
+                targetFileName = `${target.id}${target.ext}`;
+            }
             
-            // 复制文件
+            const targetPath = path.join(targetDir, targetFileName);
+
+            // 检查目标文件是否存在且时间较新
+            if (fs.existsSync(targetPath)) {
+                const srcStat = fs.statSync(sourcePath);
+                const dstStat = fs.statSync(targetPath);
+                
+                // 如果源文件修改时间不晚于目标文件，则跳过
+                if (srcStat.mtimeMs <= dstStat.mtimeMs) {
+                    console.log(`跳过未变更的图片: ${targetFileName}`);
+                    return;
+                }
+            }
+
             try {
                 fs.copyFileSync(sourcePath, targetPath);
-                copiedCount++;
                 console.log(`已复制: ${fileName} -> ${targetFileName}`);
+                copiedCount++;
             } catch (err) {
-                console.error(`复制失败: ${fileName}`, err.message);
+                console.error(`复制失败 ${fileName}:`, err.message);
             }
         } else {
-            console.warn(`未找到映射ID，跳过: ${mapKey}`);
+            console.log(`未找到映射ID，跳过: ${category}/${dishName}/${fileName}`);
         }
     });
-    
+
     console.log(`总共复制了 ${copiedCount} 个图片文件到 ${targetDir}`);
 }
 
@@ -389,20 +523,48 @@ function main() {
     const outputPath = path.join(__dirname, 'ordering-app', 'js', 'data.js');
     const imgDir = path.join(__dirname, 'ordering-app', 'img');
     
-    // 检查目标目录是否存在，如果存在则删除
+    // 读取上次更新状态
+    const lastUpdate = readLastUpdate();
+
+    // 检查目标目录是否存在
     if (fs.existsSync(howToCookDir)) {
-        console.log('删除已存在的HowToCook目录...');
-        fs.rmSync(howToCookDir, { recursive: true, force: true });
-    }
-    
-    // 克隆仓库
-    console.log('正在下载菜谱仓库...');
-    try {
-        execSync(`git clone ${repoUrl} ${howToCookDir}`, { stdio: 'inherit' });
-        console.log('菜谱仓库下载完成!');
-    } catch (error) {
-        console.error('菜谱仓库下载失败:', error.message);
-        process.exit(1);
+        // 如果目录存在，执行增量更新
+        console.log('检测到已存在的仓库，执行增量更新...');
+        try {
+            // 检查是否是git仓库
+            execSync('git status', { cwd: howToCookDir, stdio: 'ignore' });
+            console.log('正在拉取最新菜谱数据...');
+            execSync('git pull', { cwd: howToCookDir, stdio: 'inherit' });
+            console.log('菜谱数据更新完成!');
+        } catch (error) {
+            console.error('增量更新失败，尝试重新克隆仓库:', error.message);
+            // 删除现有目录并重新克隆
+            console.log('删除已存在的HowToCook目录...');
+            fs.rmSync(howToCookDir, { recursive: true, force: true });
+            
+            // 克隆仓库
+            console.log('正在下载菜谱仓库...');
+            try {
+                execSync(`git clone ${repoUrl} ${howToCookDir}`, { stdio: 'inherit' });
+                console.log('菜谱仓库下载完成!');
+            } catch (cloneError) {
+                console.error('菜谱仓库下载失败:', cloneError.message);
+                process.exit(1);
+            }
+        }
+    } else {
+        // 如果目录不存在，执行完整克隆
+        console.log('未检测到本地仓库，执行完整克隆...');
+        
+        // 克隆仓库
+        console.log('正在下载菜谱仓库...');
+        try {
+            execSync(`git clone ${repoUrl} ${howToCookDir}`, { stdio: 'inherit' });
+            console.log('菜谱仓库下载完成!');
+        } catch (error) {
+            console.error('菜谱仓库下载失败:', error.message);
+            process.exit(1);
+        }
     }
     
     if (!fs.existsSync(dishesDir)) {
@@ -411,13 +573,16 @@ function main() {
     }
     
     console.log('正在扫描菜品...');
-    const dishes = scanDishes(dishesDir);
+    const { dishes, currentUpdate } = scanDishes(dishesDir, lastUpdate);
     
     console.log('正在生成数据文件...');
     generateDataFile(dishes, outputPath);
     
     console.log('正在复制图片文件...');
     copyImages(dishes, dishesDir, imgDir);
+    
+    // 保存本次更新状态
+    saveLastUpdate(currentUpdate);
     
     console.log('完成!');
 }

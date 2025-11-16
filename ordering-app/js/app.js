@@ -16,6 +16,9 @@ let selectedRandomCategories = ['all']; // 默认选择全部
 let randomDishResult = null; // 随机选中的菜品
 // 弹窗来源跟踪变量
 let modalSource = ''; // 'random' 表示来自随机选择窗口，其他值或空表示正常来源
+// 图片轮播相关变量
+let currentImageIndex = 0;
+let dishImagePaths = [];
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', function() {
@@ -24,46 +27,11 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 默认选择"全部"分类
     selectCategory('all');
-    
-    // 添加搜索框事件监听
-    const searchInput = document.getElementById('dish-search');
-    searchInput.addEventListener('input', function(e) {
-        searchKeyword = e.target.value.trim();
-        renderDishes(selectedCategory);
-    });
-    
-    // 添加难度筛选按钮事件监听
-    const difficultyButtons = document.querySelectorAll('.difficulty-btn');
-    difficultyButtons.forEach(button => {
-        button.addEventListener('click', function() {
-            // 更新选中的难度
-            selectedDifficulty = parseInt(this.dataset.difficulty);
-            
-            // 更新按钮的激活状态
-            difficultyButtons.forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.difficulty === selectedDifficulty.toString());
-            });
-            
-            // 重新渲染菜品
-            renderDishes(selectedCategory);
-        });
-    });
-    
-    // 添加购物车事件监听
-    setupCartEventListeners();
+    renderDishes('all');
     
     // 初始化购物车状态为收起
-    const cartContent = document.getElementById('cart-content');
-    const cartToggle = document.getElementById('cart-toggle');
-    cartContent.classList.add('collapsed');
-    cartToggle.textContent = '展开';
-    updateCartDisplay();
-    
-    // 设置弹窗事件监听器
-    setupModalEventListeners();
-    
-    // 设置随机选菜功能事件监听器
-    setupRandomDishEventListeners();
+    document.getElementById('cart-content').style.display = 'none';
+    document.getElementById('cart-toggle').textContent = '展开';
 });
 
 // 渲染分类列表
@@ -153,6 +121,7 @@ function renderDishes(categoryId) {
 function openDishModal(dish, source = '') {
     currentDish = dish;
     modalSource = source; // 记录弹窗来源
+    currentImageIndex = 0; // 重置图片索引
     
     // 设置弹窗内容
     document.getElementById('modal-dish-name').textContent = dish.name;
@@ -168,44 +137,145 @@ function openDishModal(dish, source = '') {
         dishLinkElement.style.display = 'none';
     }
     
-    // 获取图片元素和占位符元素
-    const imageElement = document.getElementById('modal-dish-image');
-    const placeholderElement = document.getElementById('no-image-placeholder');
-    
-    // 设置图片
-    const imagePath = getDishImagePath(dish.category, dish.name, dish.imageName);
-    if (imagePath) {
-        imageElement.src = imagePath;
-        imageElement.style.display = 'block';
-        placeholderElement.style.display = 'none';
-        imageElement.onload = function() {
-            console.log('图片加载成功:', imagePath);
-        };
-        imageElement.onerror = function() {
-            console.log('图片加载失败:', imagePath);
-            imageElement.style.display = 'none';
-            placeholderElement.style.display = 'block';
-        };
-    } else {
-        imageElement.style.display = 'none';
-        placeholderElement.style.display = 'block';
-    }
+    // 处理图片显示
+    updateImageDisplay(dish);
     
     // 显示弹窗
     document.getElementById('dish-modal').style.display = 'block';
 }
 
-// 关闭菜品详情弹窗
-function closeModal() {
-    document.getElementById('dish-modal').style.display = 'none';
-    currentDish = null;
+// 更新图片显示
+function updateImageDisplay(dish) {
+    // 获取图片元素和占位符元素
+    const imageSlider = document.getElementById('dish-image-slider');
+    const singleImageElement = document.getElementById('modal-dish-image');
+    const placeholderElement = document.getElementById('no-image-placeholder');
     
-    // 如果来自随机选择窗口，则返回随机选择窗口
-    if (modalSource === 'random') {
-        document.getElementById('random-dish-modal').style.display = 'block';
+    // 获取图片路径
+    dishImagePaths = dish.imageName ? getDishImagePaths(dish.category, dish.name, dish.imageName) : [];
+    
+    if (dishImagePaths && dishImagePaths.length > 0) {
+        if (dishImagePaths.length === 1) {
+            // 单张图片
+            singleImageElement.src = dishImagePaths[0];
+            singleImageElement.style.display = 'block';
+            imageSlider.style.display = 'none';
+            placeholderElement.style.display = 'none';
+            
+            singleImageElement.onload = function() {
+                console.log('图片加载成功:', dishImagePaths[0]);
+            };
+            singleImageElement.onerror = function() {
+                console.log('图片加载失败:', dishImagePaths[0]);
+                singleImageElement.style.display = 'none';
+                placeholderElement.style.display = 'block';
+            };
+        } else {
+            // 多张图片，显示轮播
+            singleImageElement.style.display = 'none';
+            imageSlider.style.display = 'block';
+            placeholderElement.style.display = 'none';
+            
+            // 显示第一张图片
+            const currentImage = document.getElementById('modal-dish-image-current');
+            currentImage.src = dishImagePaths[0];
+            
+            // 创建指示器
+            const indicatorsContainer = document.getElementById('slider-indicators');
+            indicatorsContainer.innerHTML = '';
+            dishImagePaths.forEach((_, index) => {
+                const indicator = document.createElement('div');
+                indicator.className = 'indicator';
+                if (index === 0) {
+                    indicator.classList.add('active');
+                }
+                indicator.addEventListener('click', () => {
+                    showImage(index);
+                });
+                indicatorsContainer.appendChild(indicator);
+            });
+            
+            currentImage.onload = function() {
+                console.log('图片加载成功:', dishImagePaths[0]);
+            };
+            currentImage.onerror = function() {
+                console.log('图片加载失败:', dishImagePaths[0]);
+                imageSlider.style.display = 'none';
+                placeholderElement.style.display = 'block';
+            };
+        }
+    } else {
+        // 没有图片
+        singleImageElement.style.display = 'none';
+        imageSlider.style.display = 'none';
+        placeholderElement.style.display = 'block';
+    }
+}
+
+// 显示指定索引的图片
+function showImage(index) {
+    if (dishImagePaths.length === 0) return;
+    
+    currentImageIndex = index;
+    const currentImage = document.getElementById('modal-dish-image-current');
+    currentImage.src = dishImagePaths[index];
+    
+    // 更新指示器
+    const indicators = document.querySelectorAll('.indicator');
+    indicators.forEach((indicator, i) => {
+        if (i === index) {
+            indicator.classList.add('active');
+        } else {
+            indicator.classList.remove('active');
+        }
+    });
+}
+
+// 初始化图片轮播事件监听器
+function initImageSlider() {
+    // 上一张图片按钮
+    const prevBtn = document.getElementById('slider-prev-btn');
+    if (prevBtn) {
+        prevBtn.addEventListener('click', () => {
+            if (dishImagePaths.length === 0) return;
+            let newIndex = currentImageIndex - 1;
+            if (newIndex < 0) {
+                newIndex = dishImagePaths.length - 1;
+            }
+            showImage(newIndex);
+        });
     }
     
-    // 重置弹窗来源
+    // 下一张图片按钮
+    const nextBtn = document.getElementById('slider-next-btn');
+    if (nextBtn) {
+        nextBtn.addEventListener('click', () => {
+            if (dishImagePaths.length === 0) return;
+            let newIndex = currentImageIndex + 1;
+            if (newIndex >= dishImagePaths.length) {
+                newIndex = 0;
+            }
+            showImage(newIndex);
+        });
+    }
+}
+
+// 关闭菜品详情弹窗
+function closeModal() {
+    const modal = document.getElementById('dish-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    
+    // 如果是从随机选择窗口打开的，则返回随机选择窗口
+    if (modalSource === 'random') {
+        const randomModal = document.getElementById('random-dish-modal');
+        if (randomModal) {
+            randomModal.style.display = 'block';
+        }
+    }
+    
+    currentDish = null;
     modalSource = '';
 }
 
@@ -425,6 +495,9 @@ function addToCart(dish) {
         
         // 更新购物车显示
         updateCartDisplay();
+        
+        // 自动关闭弹窗
+        closeModal();
     }
 }
 
@@ -436,17 +509,126 @@ function toggleDishSelection(dish) {
 
 // 设置事件监听器
 function setupEventListeners() {
-    // 添加回车键搜索支持
-    document.getElementById('dish-search').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
+    // 搜索框事件监听
+    const searchInput = document.getElementById('dish-search');
+    if (searchInput) {
+        searchInput.addEventListener('input', function(e) {
             searchKeyword = e.target.value.trim();
             renderDishes(selectedCategory);
+        });
+    }
+    
+    // 难度筛选按钮事件监听
+    const difficultyButtons = document.querySelectorAll('.difficulty-btn');
+    difficultyButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            // 更新选中的难度
+            selectedDifficulty = parseInt(this.dataset.difficulty);
+            
+            // 更新按钮的激活状态
+            difficultyButtons.forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.difficulty === selectedDifficulty.toString());
+            });
+            
+            // 重新渲染菜品
+            renderDishes(selectedCategory);
+        });
+    });
+    
+    // 购物车相关按钮事件监听
+    // 购物车展开/收起 - 绑定到整个购物车容器
+    const cartContainer = document.querySelector('.cart-container');
+    if (cartContainer) {
+        cartContainer.addEventListener('click', function(e) {
+            // 检查点击的是否是购物车操作按钮，如果是则不触发切换
+            if (!e.target.closest('.cart-actions') && 
+                !e.target.closest('#cart-clear') && 
+                !e.target.closest('#cart-submit') &&
+                e.target.id !== 'cart-clear' && 
+                e.target.id !== 'cart-submit') {
+                toggleCart();
+            }
+        });
+    }
+    
+    // 不再需要单独给cart-toggle添加事件监听器，因为整个容器都可以点击
+    
+    const clearCartBtn = document.getElementById('cart-clear');
+    if (clearCartBtn) {
+        clearCartBtn.addEventListener('click', () => {
+            orderedDishes = [];
+            renderDishes(selectedCategory);
+            updateCartDisplay();
+        });
+    }
+    
+    const cartSubmitBtn = document.getElementById('cart-submit');
+    if (cartSubmitBtn) {
+        cartSubmitBtn.addEventListener('click', submitOrder);
+    }
+    
+    // 菜品详情弹窗相关按钮事件监听
+    const addToCartBtn = document.getElementById('add-to-cart-btn');
+    if (addToCartBtn) {
+        addToCartBtn.addEventListener('click', function() {
+            if (currentDish) {
+                addToCart(currentDish);
+            }
+        });
+    }
+    
+    const closeModalBtn = document.getElementById('close-modal-btn');
+    if (closeModalBtn) {
+        closeModalBtn.addEventListener('click', closeModal);
+    }
+    
+    // 点击弹窗外部关闭弹窗
+    window.addEventListener('click', function(event) {
+        const modal = document.getElementById('dish-modal');
+        if (event.target === modal) {
+            closeModal();
         }
     });
     
-    // 默认选择第一个分类
-    if (categories.length > 0) {
-        selectCategory(categories[0].id);
+    // 初始化图片轮播事件监听器
+    initImageSlider();
+    
+    // 选择困难症弹窗相关事件监听
+    const randomDishBtn = document.getElementById('random-dish-btn');
+    if (randomDishBtn) {
+        randomDishBtn.addEventListener('click', openRandomDishModal);
+    }
+    
+    const cancelRandomBtn = document.getElementById('cancel-random-btn');
+    if (cancelRandomBtn) {
+        cancelRandomBtn.addEventListener('click', closeRandomDishModal);
+    }
+    
+    const startRandomBtn = document.getElementById('start-random-btn');
+    if (startRandomBtn) {
+        startRandomBtn.addEventListener('click', startRandomDishSelection);
+    }
+    
+    const confirmRandomBtn = document.getElementById('confirm-random-btn');
+    if (confirmRandomBtn) {
+        confirmRandomBtn.addEventListener('click', function() {
+            if (randomDishResult) {
+                closeRandomDishModal();
+                openDishModal(randomDishResult, 'random'); // 传入来源参数
+            }
+        });
+    }
+    
+    const nextRandomBtn = document.getElementById('next-random-btn');
+    if (nextRandomBtn) {
+        nextRandomBtn.addEventListener('click', function() {
+            // 重新开始随机选择
+            startRandomDishSelection();
+            
+            // 隐藏"过，下一个"按钮和"看看品相"按钮
+            document.getElementById('next-random-btn').style.display = 'none';
+            document.getElementById('confirm-random-btn').style.display = 'none';
+        });
     }
 }
 
@@ -468,8 +650,16 @@ function submitOrder() {
 
 // 设置购物车事件监听器
 function setupCartEventListeners() {
-    // 购物车展开/收起
-    document.getElementById('cart-header').addEventListener('click', toggleCart);
+    // 购物车展开/收起 - 绑定到整个购物车容器
+    const cartContainer = document.querySelector('.cart-container');
+    if (cartContainer) {
+        cartContainer.addEventListener('click', function(e) {
+            // 检查点击的是否是购物车操作按钮，如果是则不触发切换
+            if (!e.target.closest('.cart-actions') && !e.target.closest('#cart-clear') && !e.target.closest('#cart-submit')) {
+                toggleCart();
+            }
+        });
+    }
     
     // 购物车清空按钮
     document.getElementById('cart-clear').addEventListener('click', () => {
@@ -484,16 +674,13 @@ function setupCartEventListeners() {
 
 // 切换购物车展开/收起状态
 function toggleCart() {
-    isCartExpanded = !isCartExpanded;
     const cartContent = document.getElementById('cart-content');
     const cartToggle = document.getElementById('cart-toggle');
     
-    if (isCartExpanded) {
-        cartContent.classList.remove('collapsed');
-        cartToggle.textContent = '收起';
-    } else {
-        cartContent.classList.add('collapsed');
-        cartToggle.textContent = '展开';
+    if (cartContent && cartToggle) {
+        isCartExpanded = !isCartExpanded;
+        cartContent.style.display = isCartExpanded ? 'block' : 'none';
+        cartToggle.textContent = isCartExpanded ? '收起' : '展开';
     }
 }
 

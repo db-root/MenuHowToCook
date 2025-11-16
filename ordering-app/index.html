@@ -63,7 +63,13 @@
         <div class="modal-content">
             <div class="modal-body">
                 <div class="dish-image-container">
-                    <img id="modal-dish-image" src="" alt="">
+                    <div class="image-slider" id="dish-image-slider" style="display: none;">
+                        <button class="slider-btn slider-btn-prev" id="slider-prev-btn">&#10094;</button>
+                        <img id="modal-dish-image-current" src="" alt="" class="slider-image">
+                        <button class="slider-btn slider-btn-next" id="slider-next-btn">&#10095;</button>
+                        <div class="slider-indicators" id="slider-indicators"></div>
+                    </div>
+                    <img id="modal-dish-image" src="" alt="" style="display: none;">
                     <div id="no-image-placeholder" class="no-image-placeholder" style="display: none;">
                         暂无成品预览图，想象下吧
                     </div>
